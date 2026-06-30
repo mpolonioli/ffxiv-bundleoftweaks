@@ -15,6 +15,15 @@ public interface IFateGrindRunState {
     int? RunUntilCompleted { get; }
     int? RemainingUntilCompleted { get; }
     bool CanSpendGemstones { get; }
+
+    /// <summary>User-configured per-item target override; null to use the mode's default (e.g. relic-derived) target.</summary>
+    int? GetItemTargetOverride(uint itemId) => null;
+}
+
+/// <summary>Per-item progress snapshot for display: how many you own (inventory) versus the required target.</summary>
+public readonly record struct ItemTargetProgress(uint ItemId, IReadOnlyList<uint> TerritoryIds, int Owned, int Required) {
+    public int Remaining => Math.Max(0, Required - Owned);
+    public bool IsComplete => Required > 0 && Remaining <= 0;
 }
 
 internal readonly record struct FateSwapZoneActions(uint? EquipItemId, RowRef<Companion> TargetCompanion);
@@ -28,6 +37,10 @@ internal interface IFateGrindMode {
     string? GetRemainingDisplay(IFateGrindRunState state);
 
     IEnumerable<ZoneItemTarget>? GetZoneItemTargets(IFateGrindRunState? state = null);
+
+    /// <summary>Per-item progress for display (includes already-completed items). Null when the mode tracks no per-item targets.</summary>
+    IEnumerable<ItemTargetProgress>? GetItemProgress(IFateGrindRunState? state = null) => null;
+
     FateSwapZoneActions? GetSwapZoneActions(uint fromTerritoryId, uint toTerritoryId) => null;
 }
 
@@ -187,7 +200,7 @@ public sealed class ZoneItemGrindMode : IFateGrindMode {
         if (!(IsAvailable?.Invoke() ?? true))
             return false;
         foreach (var goal in Goals)
-            if (GetItemCount(goal.ItemId) < GetEffectiveRequired(goal)) return false;
+            if (GetItemCount(goal.ItemId) < GetEffectiveRequired(goal, state)) return false;
         return true;
     }
 
@@ -196,13 +209,13 @@ public sealed class ZoneItemGrindMode : IFateGrindMode {
             return "Done";
         if (!(IsAvailable?.Invoke() ?? true))
             return UnavailableMessage ?? "Unavailable";
-        var total = Goals.Sum(g => Math.Max(0, GetEffectiveRequired(g) - GetItemCount(g.ItemId)));
+        var total = Goals.Sum(g => Math.Max(0, GetEffectiveRequired(g, state) - GetItemCount(g.ItemId)));
         return total == 0 ? null : $"{total} left";
     }
 
     public IEnumerable<ZoneItemTarget>? GetZoneItemTargets(IFateGrindRunState? state = null) {
         foreach (var goal in Goals) {
-            var total = GetEffectiveRequired(goal);
+            var total = GetEffectiveRequired(goal, state);
             if (total <= 0) continue;
             var remaining = Math.Max(0, total - GetItemCount(goal.ItemId));
             if (remaining <= 0) continue;
@@ -211,7 +224,16 @@ public sealed class ZoneItemGrindMode : IFateGrindMode {
         }
     }
 
-    private int GetEffectiveRequired(ItemZoneGoal goal) {
+    public IEnumerable<ItemTargetProgress>? GetItemProgress(IFateGrindRunState? state = null)
+        => Goals.Select(goal => new ItemTargetProgress(
+            goal.ItemId,
+            [.. goal.Zones.Where(id => id != 0)],
+            GetItemCount(goal.ItemId),
+            GetEffectiveRequired(goal, state)));
+
+    private int GetEffectiveRequired(ItemZoneGoal goal, IFateGrindRunState? state) {
+        if (state?.GetItemTargetOverride(goal.ItemId) is { } overrideTarget)
+            return Math.Max(0, overrideTarget);
         if (Kind == ZoneItemGoalKind.PerRelicRemaining && PerRelic is (var per, var totalRelics)) {
             var done = FateToolKit.GetRelicsCompletedForStep(RelicItemIds);
             return Math.Max(0, (totalRelics - done) * per);
