@@ -34,6 +34,9 @@ public class FateToolKitConfig {
 
     public Dictionary<FateType, HashSet<uint>> Blacklist = [];
     public HashSet<PublicEvent.FateRule> BlacklistedRules = [];
+
+    /// <summary>Per-item target override (item id → desired count). When set, replaces the mode's default (relic-derived) target.</summary>
+    public Dictionary<uint, int> ItemTarget = [];
     public List<FateSortOrder> SortOrder =
     [
         new() { Criteria = FateSortCriteria.HasBonusWithTwist, Descending = true },
@@ -93,6 +96,7 @@ public class FateToolKit : Tweak<FateToolKitConfig, FateToolKitWindow>, IFateGri
     public int CompletedCount { get; private set; }
     public int? RunUntilCompleted { get; private set; }
     public int? RemainingUntilCompleted => RunUntilCompleted is { } runUntil ? Math.Max(0, runUntil - CompletedCount) : null;
+    public int? GetItemTargetOverride(uint itemId) => Config.ItemTarget.TryGetValue(itemId, out var v) ? Math.Max(0, v) : null;
     internal HashSet<uint> SelectedSwapZones { get; } = [];
     internal string SelectedModeId {
         get;
@@ -209,7 +213,8 @@ public class FateToolKit : Tweak<FateToolKitConfig, FateToolKitWindow>, IFateGri
 
     private static unsafe int GetItemCount(uint itemId) => FFXIVClientStructs.FFXIV.Client.Game.InventoryManager.Instance()->GetInventoryItemCount(itemId);
 
-    private void RefreshZoneItemTargets() {
+    /// <summary>Rebuild the active zone/item targets. Called on run start, mode change, and when a per-item target is edited.</summary>
+    internal void RefreshZoneItemTargets() {
         if (GetCurrentMode().GetZoneItemTargets(this) is not { } targets) {
             ZoneItemTargets = [];
             return;
