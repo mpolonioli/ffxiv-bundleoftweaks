@@ -19,6 +19,8 @@ public class FateToolKitWindow(FateToolKit tweak) : MinimisableWindow($"Fate Tra
     protected override void DrawContent(bool minimised) {
         tweak.SyncRunningState();
 
+        var itemProgress = tweak.GetCurrentMode().GetItemProgress(tweak)?.ToList();
+
         using (var rounding = ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, 6f))
         using (var runButtonColor = ImRaii.PushColor(ImGuiCol.Button, tweak.Running ? (uint)Colors.Negative : (uint)Colors.Positive)
             .Push(ImGuiCol.ButtonHovered, tweak.Running ? (uint)Colors.NegativeHover : (uint)Colors.PositiveHover)
@@ -67,6 +69,8 @@ public class FateToolKitWindow(FateToolKit tweak) : MinimisableWindow($"Fate Tra
                 ImGui.SameLine();
                 var (bg, fg) = modeRemaining.Equals("Done", StringComparison.OrdinalIgnoreCase) ? (Colors.ChipMuted, Colors.Grey2) : (Colors.ChipInfo, Colors.Grey2);
                 DrawHeaderChip(modeRemaining, bg, fg);
+                if (itemProgress is { Count: > 0 })
+                    ImGui.TooltipOnHover(BuildItemProgressTooltip(itemProgress));
             }
 
             ImGui.SameLine();
@@ -105,6 +109,11 @@ public class FateToolKitWindow(FateToolKit tweak) : MinimisableWindow($"Fate Tra
             return;
 
         ImGui.SpacedSeparator();
+
+        if (itemProgress is { Count: > 0 }) {
+            DrawItemProgressTable(itemProgress);
+            ImGui.SpacedSeparator();
+        }
 
         if (tweak.GetOrderedFates().ToList() is not { Count: > 0 } fates) {
             ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 1f), "No fates match the current filters.");
@@ -190,6 +199,95 @@ public class FateToolKitWindow(FateToolKit tweak) : MinimisableWindow($"Fate Tra
             .Push(ImGuiCol.ButtonActive, (uint)background)
             .Push(ImGuiCol.Text, (uint)textColor);
         ImGui.Button(text);
+    }
+
+    private static readonly Vector4 CompleteColor = new(0.45f, 0.85f, 0.45f, 1f);
+
+    private void DrawItemProgressTable(List<ItemTargetProgress> progress) {
+        var completeCount = progress.Count(p => p.IsComplete);
+        using var node = ImRaii.TreeNode($"Per-type progress  ({completeCount}/{progress.Count} complete)###ItemProgress", ImGuiTreeNodeFlags.DefaultOpen);
+        if (!node)
+            return;
+
+        ImGui.TextWrapped("Edit \"Target\" to set how many of each you want (default is 10, enough atma for every relic; reset with the undo button). When a row is complete its zone is skipped during farming.");
+
+        using var table = ImRaii.Table("###ItemProgressTable", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp);
+        if (!table)
+            return;
+
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("Zone", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("In bags", ImGuiTableColumnFlags.WidthFixed);
+        ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthFixed);
+        ImGui.TableSetupColumn("Left", ImGuiTableColumnFlags.WidthFixed);
+        ImGui.TableHeadersRow();
+
+        foreach (var p in progress) {
+            using var id = ImRaii.PushId((int)p.ItemId);
+            ImGui.TableNextRow();
+
+            ImGui.TableNextColumn();
+            if (p.IsComplete)
+                ImGui.TextColored(CompleteColor, ItemName(p.ItemId));
+            else
+                ImGui.TextV(ItemName(p.ItemId));
+
+            ImGui.TableNextColumn();
+            ImGui.TextV(ZoneNames(p.TerritoryIds));
+
+            ImGui.TableNextColumn();
+            ImGui.TextV(p.Owned.ToString());
+
+            ImGui.TableNextColumn();
+            var target = p.Required;
+            ImGui.SetNextItemWidth(70f.Scaled());
+            if (ImGui.InputInt("###target", ref target, 0))
+                SetTarget(p.ItemId, target);
+            if (tweak.Config.ItemTarget.ContainsKey(p.ItemId)) {
+                ImGui.SameLine();
+                if (ImGuiComponents.IconButton("###resetTarget", FontAwesomeIcon.Undo))
+                    ResetTarget(p.ItemId);
+                ImGui.TooltipOnHover("Reset to default target");
+            }
+
+            ImGui.TableNextColumn();
+            if (p.IsComplete)
+                ImGui.TextColored(CompleteColor, "Done");
+            else
+                ImGui.TextV(p.Remaining.ToString());
+        }
+    }
+
+    private void SetTarget(uint itemId, int value) {
+        tweak.Config.ItemTarget[itemId] = Math.Max(0, value);
+        tweak.RefreshZoneItemTargets();
+    }
+
+    private void ResetTarget(uint itemId) {
+        tweak.Config.ItemTarget.Remove(itemId);
+        tweak.RefreshZoneItemTargets();
+    }
+
+    private static string BuildItemProgressTooltip(List<ItemTargetProgress> progress) {
+        var sb = new StringBuilder();
+        foreach (var p in progress) {
+            var status = p.IsComplete ? "done" : $"{p.Remaining} left";
+            sb.AppendLine($"{ItemName(p.ItemId)} ({ZoneNames(p.TerritoryIds)}): {p.Owned}/{p.Required} — {status}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string ItemName(uint itemId) {
+        var name = Sheets.Item.GetRow(itemId).Name.ToString();
+        return string.IsNullOrEmpty(name) ? $"Item {itemId}" : name;
+    }
+
+    private static string ZoneNames(IReadOnlyList<uint> territoryIds)
+        => territoryIds.Count == 0 ? "?" : string.Join(", ", territoryIds.Select(ZoneName));
+
+    private static string ZoneName(uint territoryId) {
+        var name = Sheets.TerritoryType.GetRow(territoryId).PlaceName.Value.Name.ToString();
+        return string.IsNullOrEmpty(name) ? $"#{territoryId}" : name;
     }
 
     private string BuildFateTooltip(PublicEvent fate, string displayName) {
